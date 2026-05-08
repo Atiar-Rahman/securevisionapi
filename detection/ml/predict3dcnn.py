@@ -18,17 +18,27 @@ except:
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 model_path = os.path.join(BASE_DIR, "ml", "best_3dcnn_model.h5")
 
-# Load model ONCE
-model = load_model(model_path)
+model = None
+model_lock = Lock()
 
-# Compile model for faster inference
-model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
 
-# Create a TF function wrapper for faster prediction
-@tf.function(reduce_retracing=True)
-def _fast_predict_3d(input_array):
-    """TensorFlow compiled function for fast 3D CNN prediction"""
-    return model(input_array, training=False)
+def _get_model():
+    """Load the TensorFlow model lazily so web startup does not stall port binding."""
+    global model
+    if model is None:
+        with model_lock:
+            if model is None:
+                model = load_model(model_path, compile=False)
+    return model
+
+
+def is_model_loaded():
+    return model is not None
+
+
+def warmup_model():
+    _get_model()
+    return True
 
 # Global camera buffers and locks
 camera_buffers = {}
@@ -146,8 +156,8 @@ def predict_frame_multi3d(frame, camera_id, skip_rate=None):
             # Convert to tensor once
             input_tensor = tf.convert_to_tensor(input_array, dtype=tf.float32)
             
-            # Use fast prediction
-            prediction = _fast_predict_3d(input_tensor).numpy()[0][0]
+            loaded_model = _get_model()
+            prediction = loaded_model(input_tensor, training=False).numpy()[0][0]
             
         except Exception as e:
             print(f"Model prediction error: {e}")

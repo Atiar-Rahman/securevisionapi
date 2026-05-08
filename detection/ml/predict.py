@@ -20,17 +20,27 @@ except:
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 model_path = os.path.join(BASE_DIR, "ml", "best_cnn_lstm_model.h5")
 
-# Load model ONCE
-model = load_model(model_path)
+model = None
+model_lock = Lock()
 
-# Compile model for faster inference
-model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
 
-# Create a TF function wrapper for faster prediction
-@tf.function(reduce_retracing=True)
-def _fast_predict(input_array):
-    """TensorFlow compiled function for fast prediction"""
-    return model(input_array, training=False)
+def _get_model():
+    """Load the TensorFlow model lazily so app startup can bind its port quickly."""
+    global model
+    if model is None:
+        with model_lock:
+            if model is None:
+                model = load_model(model_path, compile=False)
+    return model
+
+
+def is_model_loaded():
+    return model is not None
+
+
+def warmup_model():
+    _get_model()
+    return True
 
 SEQ_LEN = 16
 IMG_SIZE = 160
@@ -135,8 +145,8 @@ def predict_frame14(frame, camera_id="default", skip_rate=None):
             # Convert to tensor once
             input_tensor = tf.convert_to_tensor(input_array, dtype=tf.float32)
             
-            # Use fast prediction
-            prediction = _fast_predict(input_tensor).numpy()[0][0]
+            loaded_model = _get_model()
+            prediction = loaded_model(input_tensor, training=False).numpy()[0][0]
             
         except Exception as e:
             print(f"Model prediction error: {e}")
@@ -234,8 +244,8 @@ def predict_frame_multi(frame, camera_id, skip_rate=None):
             # Convert to tensor once
             input_tensor = tf.convert_to_tensor(input_array, dtype=tf.float32)
             
-            # Use fast prediction
-            prediction = _fast_predict(input_tensor).numpy()[0][0]
+            loaded_model = _get_model()
+            prediction = loaded_model(input_tensor, training=False).numpy()[0][0]
             
         except Exception as e:
             print(f"Model prediction error: {e}")
@@ -386,6 +396,7 @@ IMG_SIZE = 160
 
 def run_video_prediction(video_path, model, *, camera=None, stop_on_suspicious=True):
     """Run video prediction and optionally stop as soon as suspicious activity is found."""
+    loaded_model = model or _get_model()
     cap = cv2.VideoCapture(video_path)
 
     frames = []
@@ -410,9 +421,8 @@ def run_video_prediction(video_path, model, *, camera=None, stop_on_suspicious=T
             try:
                 input_array = np.expand_dims(np.array(frames), axis=0)
                 
-                # Convert to tensor and use fast predict
                 input_tensor = tf.convert_to_tensor(input_array, dtype=tf.float32)
-                pred = _fast_predict(input_tensor).numpy()
+                pred = loaded_model(input_tensor, training=False).numpy()
                 
                 pred = np.array(pred).squeeze()
 

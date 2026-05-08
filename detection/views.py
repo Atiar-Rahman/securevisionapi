@@ -12,7 +12,7 @@ from rest_framework.views import APIView
 from alert.models import Alert
 from cameras.models import Camera
 from detection.ml.predict import (
-    model,
+    _get_model,
     predict_frame14,
     predict_frame_multi,
     predict_frame_multi15,
@@ -293,7 +293,7 @@ class VideoPredictionViewSet(viewsets.ModelViewSet):
 
         final, suspicious, normal, suspicious_frame = run_video_prediction(
             video_obj.video.path,
-            model,
+            _get_model(),
             camera=video_obj.camera,
         )
 
