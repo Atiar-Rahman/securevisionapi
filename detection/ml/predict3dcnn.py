@@ -5,21 +5,32 @@ import os
 import numpy as np
 import cv2
 from threading import Lock
-import tensorflow as tf
-from tensorflow.keras.models import load_model  # type: ignore
-
-# Enable mixed precision for faster computation
-try:
-    policy = tf.keras.mixed_precision.Policy('mixed_float16')
-    tf.keras.mixed_precision.set_global_policy(policy)
-except:
-    pass
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 model_path = os.path.join(BASE_DIR, "ml", "best_3dcnn_model.h5")
 
 model = None
 model_lock = Lock()
+tf_module = None
+tf_lock = Lock()
+
+
+def _get_tf():
+    """Import TensorFlow lazily so startup is not blocked by ML initialization."""
+    global tf_module
+    if tf_module is None:
+        with tf_lock:
+            if tf_module is None:
+                import tensorflow as tf  # type: ignore
+
+                try:
+                    policy = tf.keras.mixed_precision.Policy("mixed_float16")
+                    tf.keras.mixed_precision.set_global_policy(policy)
+                except Exception:
+                    pass
+
+                tf_module = tf
+    return tf_module
 
 
 def _get_model():
@@ -28,6 +39,8 @@ def _get_model():
     if model is None:
         with model_lock:
             if model is None:
+                tf = _get_tf()
+                load_model = tf.keras.models.load_model
                 model = load_model(model_path, compile=False)
     return model
 
@@ -153,7 +166,7 @@ def predict_frame_multi3d(frame, camera_id, skip_rate=None):
         try:
             input_array = np.expand_dims(np.stack(buffer, axis=0), axis=0)  # (1, SEQ_LEN, IMG_SIZE, IMG_SIZE, 3)
             
-            # Convert to tensor once
+            tf = _get_tf()
             input_tensor = tf.convert_to_tensor(input_array, dtype=tf.float32)
             
             loaded_model = _get_model()
