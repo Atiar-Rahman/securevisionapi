@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: securevisionai-backend
+    env: docker
+    plan: starter
+    autoDeploy: true
+    healthCheckPath: /
+    envVars:
+      - key: DEBUG
+        value: "False"
+      - key: DB_SSL_REQUIRED
+        value: "True"

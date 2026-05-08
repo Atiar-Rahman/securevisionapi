@@ -2,6 +2,7 @@ from datetime import timedelta
 import os
 from decouple import AutoConfig
 from pathlib import Path
+from urllib.parse import urlparse, unquote
 
 try:
     import cloudinary
@@ -33,6 +34,18 @@ def _split_csv(value):
     return [item.strip() for item in str(value).split(",") if item.strip()]
 
 
+def _postgres_config_from_url(database_url):
+    parsed = urlparse(database_url)
+    return {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": parsed.path.lstrip("/"),
+        "USER": unquote(parsed.username or ""),
+        "PASSWORD": unquote(parsed.password or ""),
+        "HOST": parsed.hostname or "",
+        "PORT": str(parsed.port or "5432"),
+    }
+
+
 
 SECRET_KEY = config('SECRET_KEY')
 DEBUG = _to_bool(config('DEBUG', default=False))
@@ -41,9 +54,19 @@ default_allowed_hosts = [
     "127.0.0.1",
     "localhost",
     ".fly.dev",
+    ".onrender.com",
 ]
 configured_hosts = _split_csv(config("ALLOWED_HOSTS", default=""))
-ALLOWED_HOSTS = list(dict.fromkeys([*default_allowed_hosts, *configured_hosts]))
+render_external_hostname = config("RENDER_EXTERNAL_HOSTNAME", default="").strip()
+ALLOWED_HOSTS = list(
+    dict.fromkeys(
+        [
+            *default_allowed_hosts,
+            *configured_hosts,
+            *([render_external_hostname] if render_external_hostname else []),
+        ]
+    )
+)
 
 # Use BigAutoField by default for all models
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
@@ -124,6 +147,8 @@ env_origins = [
     config("FRONTEND_URL", default="").strip(),
     config("BACKEND_URL", default="").strip(),
 ]
+if render_external_hostname:
+    env_origins.append(f"https://{render_external_hostname}")
 
 CORS_ALLOWED_ORIGINS = list(
     dict.fromkeys(origin for origin in [*default_allowed_origins, *configured_origins, *env_origins] if origin)
@@ -139,17 +164,24 @@ CSRF_TRUSTED_ORIGINS = CORS_ALLOWED_ORIGINS.copy()
 #     }
 # }
 
-# PostgreSQL configuration for production
-DATABASES = {
-    'default': {
+database_url = config("DATABASE_URL", default="").strip()
+
+if database_url:
+    default_database = _postgres_config_from_url(database_url)
+else:
+    default_database = {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': config('DB_NAME', default='w3_django_db'),
         'USER': config('DB_USER', default='admin'),
         'PASSWORD': config('DB_PASSWORD'),
         'HOST': config('DB_HOST', default='localhost'),
         'PORT': config('DB_PORT', default='5432'),
-        'CONN_MAX_AGE': config('DB_CONN_MAX_AGE', default=60, cast=int),
     }
+
+default_database['CONN_MAX_AGE'] = config('DB_CONN_MAX_AGE', default=60, cast=int)
+
+DATABASES = {
+    'default': default_database
 }
 
 if _to_bool(config("DB_SSL_REQUIRED", default=not DEBUG), default=not DEBUG):

@@ -18,6 +18,8 @@ RUN pip install --upgrade pip setuptools wheel \
 
 COPY . .
 
+RUN chmod +x /app/start.sh
+
 EXPOSE 10000
 
-CMD ["sh", "-c", "daphne -b 0.0.0.0 -p ${PORT:-10000} config.asgi:application"]
+CMD ["/app/start.sh"]
