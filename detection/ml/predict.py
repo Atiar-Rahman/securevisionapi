@@ -403,25 +403,31 @@ def predict_frame_multi15(frame, camera_name, skip_rate=None):
 
 import cv2
 import numpy as np
+import logging
 
 SEQ_LEN = 16
 IMG_SIZE = 160
+logger = logging.getLogger(__name__)
 
 def run_video_prediction(video_path, model, *, camera=None, stop_on_suspicious=True):
     """Run video prediction and optionally stop as soon as suspicious activity is found."""
     loaded_model = model or _get_model()
     cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"Unable to open video file: {video_path}")
 
     frames = []
     suspicious = 0
     normal = 0
     snapshot_saved = False
     first_suspicious_frame = None
+    frame_count = 0
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
+        frame_count += 1
 
         original_frame = frame.copy()
         frame = cv2.resize(frame, (IMG_SIZE, IMG_SIZE), interpolation=cv2.INTER_LINEAR)
@@ -444,7 +450,7 @@ def run_video_prediction(video_path, model, *, camera=None, stop_on_suspicious=T
 
                 label = "Suspicious" if pred_value > 0.5 else "Normal"
             except Exception as e:
-                print(f"Video prediction error: {e}")
+                logger.exception("Video prediction error while processing %s", video_path)
                 frames.pop(0)
                 continue
 
@@ -457,7 +463,7 @@ def run_video_prediction(video_path, model, *, camera=None, stop_on_suspicious=T
                         _save_camera_snapshot(camera, original_frame, prefix="video_suspicious")
                         snapshot_saved = True
                     except Exception as e:
-                        print(f"Video snapshot save error: {e}")
+                        logger.warning("Video snapshot save error for camera %s: %s", getattr(camera, "pk", None), e)
 
                 if stop_on_suspicious:
                     cap.release()
@@ -468,6 +474,9 @@ def run_video_prediction(video_path, model, *, camera=None, stop_on_suspicious=T
             frames.pop(0)
 
     cap.release()
+
+    if frame_count == 0:
+        raise ValueError(f"No readable frames found in video file: {video_path}")
 
     final = "Suspicious" if suspicious > normal else "Normal"
 

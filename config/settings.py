@@ -46,6 +46,11 @@ def _postgres_config_from_url(database_url):
     }
 
 
+def _is_pooled_postgres_host(hostname):
+    host = (hostname or "").strip().lower()
+    return "pooler.supabase.com" in host or "pgbouncer" in host
+
+
 
 SECRET_KEY = config('SECRET_KEY')
 DEBUG = _to_bool(config('DEBUG', default=False))
@@ -178,14 +183,27 @@ else:
         'PORT': config('DB_PORT', default='5432'),
     }
 
-default_database['CONN_MAX_AGE'] = config('DB_CONN_MAX_AGE', default=60, cast=int)
+is_pooled_connection = _is_pooled_postgres_host(default_database.get("HOST"))
+default_conn_max_age = 0 if is_pooled_connection else 60
+default_database['CONN_MAX_AGE'] = config('DB_CONN_MAX_AGE', default=default_conn_max_age, cast=int)
+default_database['CONN_HEALTH_CHECKS'] = _to_bool(
+    config('DB_CONN_HEALTH_CHECKS', default=not is_pooled_connection),
+    default=not is_pooled_connection,
+)
 
 DATABASES = {
     'default': default_database
 }
 
+db_options = {}
 if _to_bool(config("DB_SSL_REQUIRED", default=not DEBUG), default=not DEBUG):
-    DATABASES["default"]["OPTIONS"] = {"sslmode": "require"}
+    db_options["sslmode"] = "require"
+
+if _to_bool(config("DB_DISABLE_SERVER_SIDE_CURSORS", default=is_pooled_connection), default=is_pooled_connection):
+    DATABASES["default"]["DISABLE_SERVER_SIDE_CURSORS"] = True
+
+if db_options:
+    DATABASES["default"]["OPTIONS"] = db_options
 
 
 # Password validation

@@ -1,4 +1,7 @@
 import base64
+import logging
+import os
+import tempfile
 from threading import Lock
 
 import cv2
@@ -26,6 +29,7 @@ from .notifications import send_suspicious_detection_email
 from .serializers import VideoPredictionSerializer
 
 
+logger = logging.getLogger(__name__)
 camera_locks = {}
 frame_counters = {}
 
@@ -68,13 +72,40 @@ def _upload_frame_url(frame, camera, *, prefix):
     return upload_frame_to_cloudinary(frame, public_id=public_id)
 
 
-def _upload_video_url(video_obj):
+def _upload_video_url(video_obj, local_video_path=None):
     if not video_obj or not video_obj.video:
         return None
 
     timestamp = timezone.now().strftime("%Y%m%d_%H%M%S_%f")
     public_id = f"video_prediction_{video_obj.id}_{video_obj.user_id}_{timestamp}"
-    return upload_video_to_cloudinary(video_obj.video.path, public_id=public_id)
+    return upload_video_to_cloudinary(local_video_path or video_obj.video.path, public_id=public_id)
+
+
+def _materialize_video_file(video_field):
+    """
+    Ensure we have a readable local file path even when the storage backend
+    cannot provide a stable on-disk path inside the running container.
+    """
+    if not video_field:
+        raise ValidationError({"error": "Video file is required"})
+
+    temp_path = None
+
+    try:
+        candidate_path = video_field.path
+    except (AttributeError, NotImplementedError, ValueError):
+        candidate_path = None
+
+    if candidate_path and os.path.exists(candidate_path):
+        return candidate_path, temp_path
+
+    suffix = os.path.splitext(getattr(video_field, "name", "") or "")[1] or ".mp4"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+        for chunk in video_field.chunks():
+            temp_file.write(chunk)
+        temp_path = temp_file.name
+
+    return temp_path, temp_path
 
 
 def _build_alert(user, camera, confidence, frame_url=None):
@@ -289,50 +320,75 @@ class VideoPredictionViewSet(viewsets.ModelViewSet):
         self.perform_create(serializer)
 
         video_obj = serializer.instance
-        video_url = _upload_video_url(video_obj)
+        local_video_path = None
+        temp_path = None
 
-        final, suspicious, normal, suspicious_frame = run_video_prediction(
-            video_obj.video.path,
-            _get_model(),
-            camera=video_obj.camera,
-        )
+        try:
+            local_video_path, temp_path = _materialize_video_file(video_obj.video)
 
-        suspicious_frame_url = None
-        if final == "Suspicious" and suspicious_frame is not None and video_obj.camera is not None:
-            suspicious_frame_url = _upload_frame_url(
-                suspicious_frame,
-                video_obj.camera,
-                prefix="video_prediction",
+            try:
+                video_url = _upload_video_url(video_obj, local_video_path=local_video_path)
+            except Exception:
+                logger.exception("Video upload to Cloudinary failed for prediction %s", video_obj.id)
+                video_url = None
+
+            final, suspicious, normal, suspicious_frame = run_video_prediction(
+                local_video_path,
+                _get_model(),
+                camera=video_obj.camera,
             )
 
-        video_obj.final_result = final
-        video_obj.suspicious_frames = suspicious
-        video_obj.normal_frames = normal
-        video_obj.video_url = video_url
-        video_obj.suspicious_frame_url = suspicious_frame_url
-        video_obj.save(
-            update_fields=[
-                "final_result",
-                "suspicious_frames",
-                "normal_frames",
-                "video_url",
-                "suspicious_frame_url",
-            ]
-        )
+            suspicious_frame_url = None
+            if final == "Suspicious" and suspicious_frame is not None and video_obj.camera is not None:
+                suspicious_frame_url = _upload_frame_url(
+                    suspicious_frame,
+                    video_obj.camera,
+                    prefix="video_prediction",
+                )
 
-        frame_url = None
-        if final == "Suspicious" and video_obj.camera is not None:
-            frame_url = suspicious_frame_url
-            _build_alert(request.user, video_obj.camera, 1.0, frame_url=frame_url)
+            video_obj.final_result = final
+            video_obj.suspicious_frames = suspicious
+            video_obj.normal_frames = normal
+            video_obj.video_url = video_url
+            video_obj.suspicious_frame_url = suspicious_frame_url
+            video_obj.save(
+                update_fields=[
+                    "final_result",
+                    "suspicious_frames",
+                    "normal_frames",
+                    "video_url",
+                    "suspicious_frame_url",
+                ]
+            )
 
-        return Response(
-            {
-                "id": video_obj.id,
-                "video_url": video_obj.video_url,
-                "final_result": final,
-                "suspicious_frames": suspicious,
-                "normal_frames": normal,
-                "frame_url": video_obj.suspicious_frame_url,
-                "suspicious_frame_url": video_obj.suspicious_frame_url,
-            }
-        )
+            frame_url = None
+            if final == "Suspicious" and video_obj.camera is not None:
+                frame_url = suspicious_frame_url
+                _build_alert(request.user, video_obj.camera, 1.0, frame_url=frame_url)
+
+            return Response(
+                {
+                    "id": video_obj.id,
+                    "video_url": video_obj.video_url,
+                    "final_result": final,
+                    "suspicious_frames": suspicious,
+                    "normal_frames": normal,
+                    "frame_url": video_obj.suspicious_frame_url,
+                    "suspicious_frame_url": video_obj.suspicious_frame_url,
+                }
+            )
+        except Exception as exc:
+            logger.exception("Video prediction failed for prediction %s", getattr(video_obj, "id", None))
+            return Response(
+                {
+                    "error": "Video prediction failed",
+                    "details": str(exc),
+                },
+                status=500,
+            )
+        finally:
+            if temp_path and local_video_path and os.path.exists(local_video_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    logger.warning("Failed to clean up temp video file %s", local_video_path)
