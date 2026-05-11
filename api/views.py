@@ -5,7 +5,7 @@ from rest_framework.decorators import permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework import status
 from datetime import datetime
-from detection.ml.predict import is_model_loaded as is_main_model_loaded, warmup_model as warmup_main_model
+from detection.ml.pridict_gray import is_model_loaded as is_main_model_loaded, warmup_model as warmup_main_model
 from detection.ml.predict3dcnn import is_model_loaded as is_3d_model_loaded, warmup_model as warmup_3d_model
 
 @api_view(['GET','HEAD'])

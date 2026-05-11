@@ -24,17 +24,3 @@ def upload_frame_to_cloudinary(frame, *, public_id):
         resource_type="image",
     )
     return result.get("secure_url")
-
-
-def upload_video_to_cloudinary(file_path, *, public_id):
-    if cloudinary is None or not file_path:
-        return None
-
-    result = cloudinary.upload(
-        file_path,
-        folder="securevision/videos",
-        public_id=public_id,
-        overwrite=True,
-        resource_type="video",
-    )
-    return result.get("secure_url")

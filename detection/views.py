@@ -1,21 +1,21 @@
 import base64
-import logging
 import os
 import tempfile
+import urllib.request
 from threading import Lock
 
 import cv2
 import numpy as np
 from django.utils import timezone
-from rest_framework import permissions, viewsets
+from rest_framework import permissions, status, viewsets
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from alert.models import Alert
 from cameras.models import Camera
-from detection.ml.predict import (
-    _get_model,
+from detection.ml.pridict_gray import (
+    get_last_prediction_debug,
     predict_frame14,
     predict_frame_multi,
     predict_frame_multi15,
@@ -23,15 +23,12 @@ from detection.ml.predict import (
 )
 from detection.ml.predict3dcnn import predict_frame_multi3d
 
-from .cloudinary_utils import upload_frame_to_cloudinary, upload_video_to_cloudinary
+from .cloudinary_utils import upload_frame_to_cloudinary
 from .models import VideoPrediction
 from .notifications import send_suspicious_detection_email
-from .serializers import VideoPredictionSerializer
+from .serializers import VideoPredictionSerializer, VideoUploadSerializer
 
-
-logger = logging.getLogger(__name__)
 camera_locks = {}
-frame_counters = {}
 
 
 def _decode_base64_frame(image_data):
@@ -72,13 +69,14 @@ def _upload_frame_url(frame, camera, *, prefix):
     return upload_frame_to_cloudinary(frame, public_id=public_id)
 
 
-def _upload_video_url(video_obj, local_video_path=None):
+def _get_video_url(video_obj):
     if not video_obj or not video_obj.video:
         return None
 
-    timestamp = timezone.now().strftime("%Y%m%d_%H%M%S_%f")
-    public_id = f"video_prediction_{video_obj.id}_{video_obj.user_id}_{timestamp}"
-    return upload_video_to_cloudinary(local_video_path or video_obj.video.path, public_id=public_id)
+    try:
+        return video_obj.video.url
+    except Exception:
+        return None
 
 
 def _materialize_video_file(video_field):
@@ -99,10 +97,33 @@ def _materialize_video_file(video_field):
     if candidate_path and os.path.exists(candidate_path):
         return candidate_path, temp_path
 
-    suffix = os.path.splitext(getattr(video_field, "name", "") or "")[1] or ".mp4"
+    file_name = getattr(video_field, "name", "") or ""
+    suffix = os.path.splitext(file_name)[1] or ".mp4"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-        for chunk in video_field.chunks():
-            temp_file.write(chunk)
+        if hasattr(video_field, "open") and hasattr(video_field, "read"):
+            video_field.open("rb")
+            try:
+                while True:
+                    chunk = video_field.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    temp_file.write(chunk)
+            finally:
+                try:
+                    video_field.close()
+                except Exception:
+                    pass
+        else:
+            remote_url = getattr(video_field, "url", None)
+            if not remote_url:
+                raise ValidationError({"error": "Video file could not be accessed"})
+
+            with urllib.request.urlopen(remote_url) as response:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    temp_file.write(chunk)
         temp_path = temp_file.name
 
     return temp_path, temp_path
@@ -118,6 +139,19 @@ def _build_alert(user, camera, confidence, frame_url=None):
     )
     send_suspicious_detection_email(alert)
     return alert
+
+
+def _prediction_response(label, confidence, frame_url, debug_source):
+    payload = {
+        "label": label,
+        "confidence": round(confidence, 2) if confidence is not None else None,
+        "frame_url": frame_url,
+    }
+    debug_info = get_last_prediction_debug(debug_source)
+    if debug_info:
+        payload["suspicious_score"] = round(debug_info.get("suspicious_score", 0.0), 4)
+        payload["threshold"] = round(debug_info.get("threshold", 0.0), 4)
+    return payload
 
 
 class DetectAPIView14(APIView):
@@ -153,7 +187,7 @@ class DetectAPIView14(APIView):
             frame_url = _upload_frame_url(frame, camera, prefix="detect14")
             _build_alert(request.user, camera, confidence, frame_url=frame_url)
 
-        return Response({"label": label, "confidence": round(confidence, 2), "frame_url": frame_url})
+        return Response(_prediction_response(label, confidence, frame_url, f"camera:{prediction_key}"))
 
 
 class DetectAPIViewUpdate(APIView):
@@ -186,7 +220,7 @@ class DetectAPIViewUpdate(APIView):
             frame_url = _upload_frame_url(frame, camera, prefix="detect_update")
             _build_alert(request.user, camera, confidence, frame_url=frame_url)
 
-        return Response({"label": label, "confidence": round(confidence, 2), "frame_url": frame_url})
+        return Response(_prediction_response(label, confidence, frame_url, f"camera:{prediction_key}"))
 
 
 class DetectAPIView(APIView):
@@ -222,7 +256,7 @@ class DetectAPIView(APIView):
             frame_url = _upload_frame_url(frame, camera, prefix="detect")
             _build_alert(request.user, camera, confidence, frame_url=frame_url)
 
-        return Response({"label": label, "confidence": round(confidence, 2), "frame_url": frame_url})
+        return Response(_prediction_response(label, confidence, frame_url, f"camera:{prediction_key}"))
 
 
 class DetectAPIViewSikp(APIView):
@@ -240,10 +274,6 @@ class DetectAPIViewSikp(APIView):
             return Response({"error": "Camera not authorized"}, status=403)
 
         prediction_key = _get_prediction_key(camera)
-        frame_counters[prediction_key] = frame_counters.get(prediction_key, 0) + 1
-
-        if frame_counters[prediction_key] % 3 != 0:
-            return Response({"label": None, "confidence": None, "frame_url": None})
 
         try:
             frame = _decode_base64_frame(image_data)
@@ -278,10 +308,6 @@ class Detect3DCNNAPIView(APIView):
             return Response({"error": "Camera not authorized"}, status=403)
 
         prediction_key = _get_prediction_key(camera)
-        frame_counters[prediction_key] = frame_counters.get(prediction_key, 0) + 1
-
-        if frame_counters[prediction_key] % 3 != 0:
-            return Response({"label": None, "confidence": None, "frame_url": None})
 
         try:
             frame = _decode_base64_frame(image_data)
@@ -327,15 +353,12 @@ class VideoPredictionViewSet(viewsets.ModelViewSet):
             local_video_path, temp_path = _materialize_video_file(video_obj.video)
 
             try:
-                video_url = _upload_video_url(video_obj, local_video_path=local_video_path)
+                video_url = _get_video_url(video_obj)
             except Exception:
-                logger.exception("Video upload to Cloudinary failed for prediction %s", video_obj.id)
                 video_url = None
 
             final, suspicious, normal, suspicious_frame = run_video_prediction(
                 local_video_path,
-                _get_model(),
-                camera=video_obj.camera,
             )
 
             suspicious_frame_url = None
@@ -375,10 +398,11 @@ class VideoPredictionViewSet(viewsets.ModelViewSet):
                     "normal_frames": normal,
                     "frame_url": video_obj.suspicious_frame_url,
                     "suspicious_frame_url": video_obj.suspicious_frame_url,
+                    "suspicious_score": round(get_last_prediction_debug("video").get("suspicious_score", 0.0), 4),
+                    "threshold": round(get_last_prediction_debug("video").get("threshold", 0.0), 4),
                 }
             )
         except Exception as exc:
-            logger.exception("Video prediction failed for prediction %s", getattr(video_obj, "id", None))
             return Response(
                 {
                     "error": "Video prediction failed",
@@ -391,4 +415,46 @@ class VideoPredictionViewSet(viewsets.ModelViewSet):
                 try:
                     os.remove(temp_path)
                 except OSError:
-                    logger.warning("Failed to clean up temp video file %s", local_video_path)
+                    pass
+class VideoPredictionAPIView(APIView):
+    def post(self, request):
+        serializer = VideoUploadSerializer(data=request.data)
+
+        if not serializer.is_valid():
+            return Response(
+                serializer.errors,
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        video_file = serializer.validated_data["video"]
+
+        suffix = os.path.splitext(getattr(video_file, "name", "") or "")[1] or ".mp4"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as destination:
+            temp_path = destination.name
+            for chunk in video_file.chunks():
+                destination.write(chunk)
+
+        try:
+            label, suspicious, normal, _ = run_video_prediction(
+                temp_path
+            )
+
+            response_data = {
+                "prediction": label,
+                "suspicious_count": suspicious,
+                "normal_count": normal,
+                "suspicious_score": round(get_last_prediction_debug("video").get("suspicious_score", 0.0), 4),
+                "threshold": round(get_last_prediction_debug("video").get("threshold", 0.0), 4),
+            }
+
+            return Response(response_data, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response(
+                {"error": str(e)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)

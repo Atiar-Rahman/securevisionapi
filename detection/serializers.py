@@ -3,6 +3,11 @@
 from rest_framework import serializers
 from .models import VideoPrediction
 
+
+class VideoUploadSerializer(serializers.Serializer):
+    video = serializers.FileField()
+
+
 class VideoPredictionSerializer(serializers.ModelSerializer):
     class Meta:
         model = VideoPrediction

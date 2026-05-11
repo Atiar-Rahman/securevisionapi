@@ -7,7 +7,7 @@ from rest_framework_simplejwt.tokens import AccessToken
 from django.contrib.auth.models import User
 from channels.db import database_sync_to_async
 
-from detection.ml.predict import (
+from detection.ml.pridict_gray import (
     predict_frame14,
     predict_frame_multi,
     predict_frame_multi15,

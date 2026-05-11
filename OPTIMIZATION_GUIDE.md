@@ -70,14 +70,6 @@ camera_frames = [frame1, frame2, frame3]
 predictions = _fast_predict_batch(camera_frames)
 ```
 
-### 4. Model Quantization (Advanced)
-For even faster inference on lower-end hardware:
-```python
-# Convert to TFLite (additional 2-3x speedup)
-converter = tf.lite.TFLiteConverter.from_saved_model(model_path)
-tflite_model = converter.convert()
-```
-
 ## Troubleshooting
 
 **If predictions are still slow:**
@@ -87,12 +79,12 @@ tflite_model = converter.convert()
 4. Consider reducing image size if it's not critical
 
 **If you see errors:**
-1. Ensure TensorFlow is up to date: `pip install --upgrade tensorflow`
-2. Check GPU memory if using GPU: `nvidia-smi`
-3. Clear model cache if loading fails: Delete/recreate cached models
+1. Ensure ONNX Runtime is installed correctly
+2. Check CPU or GPU availability depending on your ONNX provider setup
+3. Confirm the model input matches the current pipeline: grayscale, `96x96`, `SEQ_LEN=8`
 
 ## Files Modified
-- `detection/ml/predict.py` - All prediction functions optimized
+- `detection/ml/pridict_gray.py` - Main ONNX CNN-LSTM prediction pipeline
 - `detection/ml/predict3dcnn.py` - 3D CNN predictions optimized
 
 ## Next Steps
