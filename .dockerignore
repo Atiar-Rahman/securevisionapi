@@ -1,8 +1,22 @@
 venv/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+
 .git/
+
 .env
+
 db.sqlite3
+
 media/
 staticfiles/
+
+# OS / editor files (recommended)
+.DS_Store
+.vscode/
+.idea/
+
+# logs
+*.log
