@@ -332,6 +332,8 @@ class VideoPredictionViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, 'swagger_fake_view', False):
+            return VideoPrediction.objects.none()
         return VideoPrediction.objects.filter(user=self.request.user).select_related("camera")
 
     def perform_create(self, serializer):

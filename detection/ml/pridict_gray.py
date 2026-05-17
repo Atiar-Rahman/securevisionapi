@@ -38,7 +38,7 @@ BASE_DIR = os.path.dirname(
 model_path = os.path.join(
     BASE_DIR,
     "ml",
-    "best_cnn_lstm_random_gray.onnx"
+    "best_cnn_lstm_model_gray_version1.onnx"
 )
 
 # =========================================================
