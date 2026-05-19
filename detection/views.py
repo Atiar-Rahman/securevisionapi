@@ -22,6 +22,7 @@ from detection.ml.pridict_gray import (
     run_video_prediction,
 )
 from detection.ml.predict3dcnn import predict_frame_multi3d
+from detection.ml.predict3dcnn import get_last_prediction_debug as get_last_prediction_debug_3d
 
 from .cloudinary_utils import upload_frame_to_cloudinary
 from .models import VideoPrediction
@@ -283,14 +284,28 @@ class DetectAPIViewSikp(APIView):
         label, confidence = predict_frame_multi(frame, prediction_key)
 
         if label is None:
-            return Response({"label": None, "confidence": None, "frame_url": None})
+            return Response(
+                {
+                    "label": None,
+                    "confidence": None,
+                    "frame_url": None,
+                    "sequence_ready": False,
+                }
+            )
 
         frame_url = None
         if label == "Suspicious":
             frame_url = _upload_frame_url(frame, camera, prefix="detect_skip")
             _build_alert(request.user, camera, confidence, frame_url=frame_url)
 
-        return Response({"label": label, "confidence": round(confidence, 2), "frame_url": frame_url})
+        payload = _prediction_response(
+            label,
+            confidence,
+            frame_url,
+            f"camera:{prediction_key}",
+        )
+        payload["sequence_ready"] = True
+        return Response(payload)
 
 
 class Detect3DCNNAPIView(APIView):
@@ -317,14 +332,36 @@ class Detect3DCNNAPIView(APIView):
         label, confidence = predict_frame_multi3d(frame, prediction_key)
 
         if label is None:
-            return Response({"label": None, "confidence": None, "frame_url": None})
+            return Response(
+                {
+                    "label": None,
+                    "confidence": None,
+                    "frame_url": None,
+                    "sequence_ready": False,
+                }
+            )
 
         frame_url = None
         if label == "Suspicious":
             frame_url = _upload_frame_url(frame, camera, prefix="detect_3dcnn")
             _build_alert(request.user, camera, confidence, frame_url=frame_url)
 
-        return Response({"label": label, "confidence": round(confidence, 2), "frame_url": frame_url})
+        return Response(
+            {
+                "label": label,
+                "confidence": round(confidence, 2),
+                "frame_url": frame_url,
+                "sequence_ready": True,
+                "suspicious_score": round(
+                    get_last_prediction_debug_3d(f"camera:{prediction_key}:3d").get("suspicious_score", 0.0),
+                    4,
+                ),
+                "threshold": round(
+                    get_last_prediction_debug_3d(f"camera:{prediction_key}:3d").get("threshold", 0.0),
+                    4,
+                ),
+            }
+        )
 
 
 class VideoPredictionViewSet(viewsets.ModelViewSet):

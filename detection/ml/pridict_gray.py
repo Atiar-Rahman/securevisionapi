@@ -3,6 +3,7 @@ import numpy as np
 import onnxruntime as ort
 import logging
 import os
+import time
 
 from collections import deque
 from threading import Lock
@@ -23,7 +24,12 @@ SUSPICIOUS_THRESHOLD = float(
 MIN_SUSPICIOUS_VOTES = 3
 
 # debug mode
-DEBUG = True
+DEBUG = os.getenv("PREDICTION_DEBUG", "False").strip().lower() == "true"
+
+# state cleanup
+CAMERA_STATE_TTL_SECONDS = int(os.getenv("CAMERA_STATE_TTL_SECONDS", "900"))
+MAX_CAMERA_STATES = int(os.getenv("MAX_CAMERA_STATES", "256"))
+ONNX_INTRA_OP_THREADS = int(os.getenv("ONNX_INTRA_OP_THREADS", "1"))
 
 logger = logging.getLogger(__name__)
 
@@ -38,19 +44,25 @@ BASE_DIR = os.path.dirname(
 model_path = os.path.join(
     BASE_DIR,
     "ml",
-    "best_cnn_lstm_model_gray_version1.onnx"
+    "best_cnn_lstm_model_gray_version2.onnx"
 )
 
 # =========================================================
 # LOAD ONNX MODEL
 # =========================================================
 
+session_options = ort.SessionOptions()
+session_options.intra_op_num_threads = ONNX_INTRA_OP_THREADS
+session_options.inter_op_num_threads = 1
+session_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+
 session = ort.InferenceSession(
     model_path,
+    sess_options=session_options,
     providers=["CPUExecutionProvider"]
 )
-print('session all the shape',session.get_outputs()[0].shape)
-# print(pred)
+
 input_name = session.get_inputs()[0].name
 
 # =========================================================
@@ -59,6 +71,7 @@ input_name = session.get_inputs()[0].name
 
 camera_buffers = {}
 camera_locks = {}
+camera_last_seen = {}
 
 last_prediction_debug = {}
 
@@ -84,6 +97,29 @@ def warmup_model():
     return True
 
 
+def _cleanup_camera_state(now=None, *, force=False):
+    now = now or time.time()
+
+    stale_camera_ids = [
+        camera_id
+        for camera_id, last_seen in camera_last_seen.items()
+        if now - last_seen > CAMERA_STATE_TTL_SECONDS
+    ]
+
+    if force and not stale_camera_ids and len(camera_last_seen) > MAX_CAMERA_STATES:
+        overflow = len(camera_last_seen) - MAX_CAMERA_STATES
+        stale_camera_ids = sorted(
+            camera_last_seen,
+            key=camera_last_seen.get,
+        )[:overflow]
+
+    for camera_id in stale_camera_ids:
+        camera_buffers.pop(camera_id, None)
+        camera_locks.pop(camera_id, None)
+        camera_last_seen.pop(camera_id, None)
+        last_prediction_debug.pop(f"camera:{camera_id}", None)
+
+
 # =========================================================
 # PREDICTION HELPERS
 # =========================================================
@@ -98,8 +134,6 @@ def _to_probability(raw_pred):
     if pred_value < 0.0 or pred_value > 1.0:
         pred_value = 1.0 / (1.0 + np.exp(-pred_value))
     
-    print("raw", pred_value)
-
     return float(pred_value)
 
 
@@ -161,6 +195,9 @@ def predict_frame_multi(frame, camera_id="default"):
     )
 
     with lock:
+        now = time.time()
+        camera_last_seen[camera_id] = now
+        _cleanup_camera_state(now, force=True)
 
         buffer = camera_buffers.setdefault(
             camera_id,
@@ -227,7 +264,7 @@ def predict_frame_multi(frame, camera_id="default"):
             )
 
             last_prediction_debug[source] = {
-                "score": float(suspicious_score),
+                "suspicious_score": float(suspicious_score),
                 "threshold": float(SUSPICIOUS_THRESHOLD),
                 "label": label,
                 "confidence": float(confidence),
@@ -352,7 +389,7 @@ def run_video_prediction(
 
             # save debug
             last_prediction_debug["video"] = {
-                "score": float(suspicious_score),
+                "suspicious_score": float(suspicious_score),
                 "threshold": float(SUSPICIOUS_THRESHOLD),
                 "label": label,
                 "confidence": float(confidence),

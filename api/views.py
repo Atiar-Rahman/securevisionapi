@@ -31,8 +31,13 @@ def warmup_models(request):
     main_was_loaded = is_main_model_loaded()
     model_3d_was_loaded = is_3d_model_loaded()
 
+    include_3d = str(
+        request.query_params.get("include_3d", "false")
+    ).strip().lower() in {"1", "true", "yes"}
+
     warmup_main_model()
-    warmup_3d_model()
+    if include_3d:
+        warmup_3d_model()
 
     return Response(
         {
@@ -41,7 +46,8 @@ def warmup_models(request):
             "main_model_loaded_before": main_was_loaded,
             "model_3d_loaded_before": model_3d_was_loaded,
             "main_model_loaded_now": True,
-            "model_3d_loaded_now": True,
+            "model_3d_loaded_now": include_3d or model_3d_was_loaded,
+            "include_3d": include_3d,
             "timestamp": datetime.now(),
         },
         status=status.HTTP_200_OK,
