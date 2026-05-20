@@ -126,7 +126,6 @@ class DetectionConsumer(AsyncWebsocketConsumer):
                     confidence=confidence,
                     frame_url=frame_url,
                 )
-                await database_sync_to_async(send_suspicious_detection_email)(alert)
 
             response = {"label": label, "confidence": round(confidence, 2)}
             if label == "Suspicious":

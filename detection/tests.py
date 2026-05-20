@@ -38,8 +38,9 @@ class SuspiciousEmailNotificationTests(TestCase):
             stream_url="rtsp://front-door",
         )
 
+    @patch("alert.signals.send_suspicious_detection_email")
     @patch("detection.notifications.requests.get")
-    def test_email_contains_frame_link_and_attachment(self, mock_get):
+    def test_email_contains_frame_link_and_attachment(self, mock_get, mock_signal_send):
         mock_response = Mock()
         mock_response.content = b"fake-jpeg-bytes"
         mock_response.raise_for_status.return_value = None
@@ -63,9 +64,24 @@ class SuspiciousEmailNotificationTests(TestCase):
         self.assertEqual(len(email.alternatives), 1)
         self.assertEqual(email.attachments[0][0], "suspicious-frame.jpg")
 
+    @patch("alert.signals.send_suspicious_detection_email")
+    def test_suspicious_alert_creation_triggers_email(self, mock_send):
+        alert = Alert.objects.create(
+            user=self.user,
+            camera=self.camera,
+            alert_type="suspicious",
+            confidence=0.95,
+            frame_url="https://example.com/suspicious-frame.jpg",
+        )
+
+        self.assertTrue(mock_send.called)
+        self.assertEqual(mock_send.call_count, 1)
+        self.assertEqual(mock_send.call_args[0][0], alert)
+
+    @patch("alert.signals.send_suspicious_detection_email")
     @patch("detection.notifications.requests.get")
     @patch("detection.notifications.get_connection")
-    def test_email_network_unreachable_stops_retries(self, mock_get_connection, mock_get):
+    def test_email_network_unreachable_stops_retries(self, mock_get_connection, mock_get, mock_signal_send):
         mock_response = Mock()
         mock_response.content = b"fake-jpeg-bytes"
         mock_response.raise_for_status.return_value = None

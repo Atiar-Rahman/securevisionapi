@@ -182,15 +182,13 @@ def _materialize_video_file(video_field):
 
 
 def _build_alert(user, camera, confidence, frame_url=None):
-    alert = Alert.objects.create(
+    return Alert.objects.create(
         user=user,
         camera=camera,
         alert_type="suspicious",
         confidence=confidence,
         frame_url=frame_url,
     )
-    send_suspicious_detection_email(alert)
-    return alert
 
 
 def _prediction_response(label, confidence, frame_url, debug_source):
