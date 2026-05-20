@@ -55,6 +55,11 @@ from detection.ml.pridict_gray import (
     predict_frame_multi15,
     run_video_prediction,
 )
+from detection.ml.pridict_rgb import (
+    get_last_prediction_debug as get_last_prediction_debug_rgb,
+    get_sequence_status_rgb,
+    predict_frame_multi_rgb,
+)
 from detection.ml.predict3dcnn import predict_frame_multi3d
 from detection.ml.predict3dcnn import get_last_prediction_debug as get_last_prediction_debug_3d
 
@@ -193,7 +198,7 @@ def _build_alert(user, camera, confidence, frame_url=None):
     )
 
 
-def _prediction_response(label, confidence, frame_url, debug_source):
+def _prediction_response(label, confidence, frame_url, debug_source, debug_getter=None):
     payload = {
         "label": label,
         "confidence": round(confidence, 2) if confidence is not None else None,
@@ -201,7 +206,10 @@ def _prediction_response(label, confidence, frame_url, debug_source):
         "suspicious_score": None,
         "threshold": None,
     }
-    debug_info = get_last_prediction_debug(debug_source)
+    if debug_getter is None:
+        debug_getter = get_last_prediction_debug
+
+    debug_info = debug_getter(debug_source)
     if debug_info:
         payload["suspicious_score"] = round(debug_info.get("suspicious_score", 0.0), 4)
         payload["threshold"] = round(debug_info.get("threshold", 0.0), 4)
@@ -391,6 +399,80 @@ class DetectAPIViewSikp(APIView):
             f"camera:{prediction_key}",
         )
         payload["sequence_ready"] = True
+        return Response(payload)
+
+
+class DetectRGBAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        image_data = request.data.get("image")
+        camera_name = request.data.get("camera_name")
+        camera_id = request.data.get("camera_id")
+
+        if not image_data or (not camera_name and not camera_id):
+            return Response({"error": "Image and camera_name or camera_id required"}, status=400)
+
+        camera = _get_camera_for_user(
+            request.user,
+            camera_id=camera_id,
+            camera_name=camera_name,
+        )
+        if camera is None:
+            return _build_camera_not_found_response(
+                request.user,
+                camera_id=camera_id,
+                camera_name=camera_name,
+            )
+
+        prediction_key = _get_prediction_key(camera)
+
+        try:
+            frame = _decode_base64_frame(image_data)
+        except ValidationError as exc:
+            return Response(exc.detail, status=400)
+
+        try:
+            label, confidence = predict_frame_multi_rgb(frame, prediction_key)
+        except Exception:
+            logger.exception("RGB prediction failed for camera %s", prediction_key)
+            return Response({"error": "Prediction failed"}, status=500)
+
+        if label is None:
+            payload = _prediction_response(
+                None,
+                None,
+                None,
+                f"camera:{prediction_key}:rgb",
+                debug_getter=get_last_prediction_debug_rgb,
+            )
+            sequence_status = get_sequence_status_rgb(prediction_key)
+            payload.update(sequence_status)
+            payload["message"] = (
+                f"Buffering frames {sequence_status['buffered_frames']}/"
+                f"{sequence_status['required_frames']}"
+            )
+            return Response(payload)
+
+        suspicious = label == "Suspicious"
+        should_notify = should_send_suspicious_email(camera.pk, suspicious)
+
+        frame_url = None
+        if suspicious:
+            frame_url = _upload_frame_url(frame, camera, prefix="detect_rgb")
+            alert = _build_alert(request.user, camera, confidence, frame_url=frame_url)
+            if should_notify:
+                send_suspicious_detection_email(alert)
+
+        payload = _prediction_response(
+            label,
+            confidence,
+            frame_url,
+            f"camera:{prediction_key}:rgb",
+            debug_getter=get_last_prediction_debug_rgb,
+        )
+        payload.update(get_sequence_status_rgb(prediction_key))
+        payload["message"] = "Prediction complete"
         return Response(payload)
 
 
