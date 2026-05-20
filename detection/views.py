@@ -15,6 +15,8 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from detection.models import VideoPrediction
+
 logger = logging.getLogger(__name__)
 
 # Detection timeout in seconds
