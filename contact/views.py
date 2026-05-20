@@ -13,10 +13,17 @@ class ContactModelViewSet(ModelViewSet):
     ordering = ["-created_at"]
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return Contact.objects.none()
+
+        user = getattr(self.request, "user", None)
+        if not user or not user.is_authenticated:
+            return Contact.objects.none()
+
         queryset = Contact.objects.select_related("user")
-        if has_full_access(self.request.user):
+        if has_full_access(user):
             return queryset
-        return queryset.filter(user=self.request.user)
+        return queryset.filter(user=user)
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)

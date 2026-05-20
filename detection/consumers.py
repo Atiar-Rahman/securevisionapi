@@ -2,9 +2,10 @@ import json
 import base64
 import cv2
 import numpy as np
+from django.utils import timezone
 from channels.generic.websocket import AsyncWebsocketConsumer
 from rest_framework_simplejwt.tokens import AccessToken
-from django.contrib.auth.models import User
+from django.contrib.auth import get_user_model
 from channels.db import database_sync_to_async
 
 from detection.ml.pridict_gray import (
@@ -16,6 +17,20 @@ from detection.ml.predict3dcnn import predict_frame_multi3d
 
 from alert.models import Alert
 from cameras.models import Camera
+from detection.cloudinary_utils import upload_frame_to_cloudinary
+from detection.notifications import send_suspicious_detection_email
+
+
+User = get_user_model()
+
+
+def _upload_frame_url(frame, camera, *, prefix):
+    if frame is None:
+        return None
+
+    timestamp = timezone.now().strftime("%Y%m%d_%H%M%S_%f")
+    public_id = f"{prefix}_camera_{camera.pk}_{camera.user_id}_{timestamp}"
+    return upload_frame_to_cloudinary(frame, public_id=public_id)
 
 
 class DetectionConsumer(AsyncWebsocketConsumer):
@@ -99,14 +114,24 @@ class DetectionConsumer(AsyncWebsocketConsumer):
 
             # Build alert if suspicious
             if label == "Suspicious":
-                await database_sync_to_async(Alert.objects.create)(
+                frame_url = await database_sync_to_async(_upload_frame_url)(
+                    frame,
+                    camera,
+                    prefix="websocket_detect",
+                )
+                alert = await database_sync_to_async(Alert.objects.create)(
                     user=self.user,
                     camera=camera,
                     alert_type="suspicious",
                     confidence=confidence,
+                    frame_url=frame_url,
                 )
+                await database_sync_to_async(send_suspicious_detection_email)(alert)
 
-            await self.send_json({"label": label, "confidence": round(confidence, 2)})
+            response = {"label": label, "confidence": round(confidence, 2)}
+            if label == "Suspicious":
+                response["frame_url"] = frame_url
+            await self.send_json(response)
 
         except json.JSONDecodeError:
             await self.send_json({"error": "Invalid JSON"})
