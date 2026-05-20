@@ -17,7 +17,7 @@ IMG_SIZE = 96
 
 # increase threshold to reduce false positives
 SUSPICIOUS_THRESHOLD = float(
-    os.getenv("SUSPICIOUS_THRESHOLD", "0.50")
+    os.getenv("SUSPICIOUS_THRESHOLD", "0.40")
 )
 
 # voting system
