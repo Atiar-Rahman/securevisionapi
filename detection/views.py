@@ -12,6 +12,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from api.permissions import IsAuthenticatedWithAdminFullAccess, has_full_access
 from alert.models import Alert
 from cameras.models import Camera
 from detection.ml.pridict_gray import (
@@ -46,19 +47,38 @@ def _decode_base64_frame(image_data):
 
 
 def _get_camera_for_user(user, *, camera_id=None, camera_name=None):
-    queryset = Camera.objects.filter(user=user)
+    if has_full_access(user):
+        queryset = Camera.objects.all()
+    else:
+        queryset = Camera.objects.filter(user=user)
 
     if camera_id is not None:
         return queryset.filter(pk=camera_id).first()
 
     if camera_name is not None:
-        return queryset.filter(name=camera_name).first()
+        normalized_name = str(camera_name).strip()
+        if not normalized_name:
+            return None
+        return queryset.filter(name__iexact=normalized_name).first()
 
     return None
 
 
 def _get_prediction_key(camera):
     return str(camera.pk)
+
+
+def _build_camera_not_found_response(user, *, camera_id=None, camera_name=None):
+    available_cameras = Camera.objects.filter(user=user).values("id", "name")
+    return Response(
+        {
+            "error": "Camera not found or unauthorized",
+            "requested_camera_id": camera_id,
+            "requested_camera_name": camera_name,
+            "available_cameras": list(available_cameras),
+        },
+        status=403,
+    )
 
 
 def _upload_frame_url(frame, camera, *, prefix):
@@ -147,6 +167,8 @@ def _prediction_response(label, confidence, frame_url, debug_source):
         "label": label,
         "confidence": round(confidence, 2) if confidence is not None else None,
         "frame_url": frame_url,
+        "suspicious_score": None,
+        "threshold": None,
     }
     debug_info = get_last_prediction_debug(debug_source)
     if debug_info:
@@ -181,7 +203,7 @@ class DetectAPIView14(APIView):
             label, confidence = predict_frame14(frame, prediction_key)
 
         if label is None:
-            return Response({"label": None, "confidence": None, "frame_url": None})
+            return Response(_prediction_response(None, None, None, f"camera:{prediction_key}"))
 
         frame_url = None
         if label == "Suspicious":
@@ -214,7 +236,7 @@ class DetectAPIViewUpdate(APIView):
         label, confidence = predict_frame_multi(frame, prediction_key)
 
         if label is None:
-            return Response({"label": None, "confidence": None, "frame_url": None})
+            return Response(_prediction_response(None, None, None, f"camera:{prediction_key}"))
 
         frame_url = None
         if label == "Suspicious":
@@ -230,13 +252,22 @@ class DetectAPIView(APIView):
     def post(self, request):
         image_data = request.data.get("image")
         camera_name = request.data.get("camera_name")
+        camera_id = request.data.get("camera_id")
 
-        if not image_data or not camera_name:
-            return Response({"error": "image and camera_name required"}, status=400)
+        if not image_data or (not camera_name and not camera_id):
+            return Response({"error": "image and camera_name or camera_id required"}, status=400)
 
-        camera = _get_camera_for_user(request.user, camera_name=camera_name)
+        camera = _get_camera_for_user(
+            request.user,
+            camera_id=camera_id,
+            camera_name=camera_name,
+        )
         if camera is None:
-            return Response({"error": "Camera not found or unauthorized"}, status=403)
+            return _build_camera_not_found_response(
+                request.user,
+                camera_id=camera_id,
+                camera_name=camera_name,
+            )
 
         try:
             frame = _decode_base64_frame(image_data)
@@ -250,7 +281,7 @@ class DetectAPIView(APIView):
             return Response({"error": "Prediction failed"}, status=500)
 
         if label is None:
-            return Response({"label": None, "confidence": None, "frame_url": None})
+            return Response(_prediction_response(None, None, None, f"camera:{prediction_key}"))
 
         frame_url = None
         if label == "Suspicious":
@@ -266,13 +297,22 @@ class DetectAPIViewSikp(APIView):
     def post(self, request):
         image_data = request.data.get("image")
         camera_name = request.data.get("camera_name")
+        camera_id = request.data.get("camera_id")
 
-        if not image_data or not camera_name:
-            return Response({"error": "Image and camera_name required"}, status=400)
+        if not image_data or (not camera_name and not camera_id):
+            return Response({"error": "Image and camera_name or camera_id required"}, status=400)
 
-        camera = _get_camera_for_user(request.user, camera_name=camera_name)
+        camera = _get_camera_for_user(
+            request.user,
+            camera_id=camera_id,
+            camera_name=camera_name,
+        )
         if camera is None:
-            return Response({"error": "Camera not authorized"}, status=403)
+            return _build_camera_not_found_response(
+                request.user,
+                camera_id=camera_id,
+                camera_name=camera_name,
+            )
 
         prediction_key = _get_prediction_key(camera)
 
@@ -284,14 +324,9 @@ class DetectAPIViewSikp(APIView):
         label, confidence = predict_frame_multi(frame, prediction_key)
 
         if label is None:
-            return Response(
-                {
-                    "label": None,
-                    "confidence": None,
-                    "frame_url": None,
-                    "sequence_ready": False,
-                }
-            )
+            payload = _prediction_response(None, None, None, f"camera:{prediction_key}")
+            payload["sequence_ready"] = False
+            return Response(payload)
 
         frame_url = None
         if label == "Suspicious":
@@ -314,13 +349,22 @@ class Detect3DCNNAPIView(APIView):
     def post(self, request):
         image_data = request.data.get("image")
         camera_name = request.data.get("camera_name")
+        camera_id = request.data.get("camera_id")
 
-        if not image_data or not camera_name:
-            return Response({"error": "Image and camera_name required"}, status=400)
+        if not image_data or (not camera_name and not camera_id):
+            return Response({"error": "Image and camera_name or camera_id required"}, status=400)
 
-        camera = _get_camera_for_user(request.user, camera_name=camera_name)
+        camera = _get_camera_for_user(
+            request.user,
+            camera_id=camera_id,
+            camera_name=camera_name,
+        )
         if camera is None:
-            return Response({"error": "Camera not authorized"}, status=403)
+            return _build_camera_not_found_response(
+                request.user,
+                camera_id=camera_id,
+                camera_name=camera_name,
+            )
 
         prediction_key = _get_prediction_key(camera)
 
@@ -366,16 +410,22 @@ class Detect3DCNNAPIView(APIView):
 
 class VideoPredictionViewSet(viewsets.ModelViewSet):
     serializer_class = VideoPredictionSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticatedWithAdminFullAccess]
 
     def get_queryset(self):
         if getattr(self, 'swagger_fake_view', False):
             return VideoPrediction.objects.none()
+        if has_full_access(self.request.user):
+            return VideoPrediction.objects.all().select_related("camera", "user")
         return VideoPrediction.objects.filter(user=self.request.user).select_related("camera")
 
     def perform_create(self, serializer):
         camera = serializer.validated_data.get("camera")
-        if camera is not None and camera.user_id != self.request.user.id:
+        if (
+            camera is not None
+            and camera.user_id != self.request.user.id
+            and not has_full_access(self.request.user)
+        ):
             raise PermissionDenied("You can only create predictions for your own cameras.")
         serializer.save(user=self.request.user)
 
