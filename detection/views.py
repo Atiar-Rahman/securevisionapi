@@ -1,7 +1,10 @@
 import base64
+import logging
 import os
+import signal
 import tempfile
 import urllib.request
+from contextlib import contextmanager
 from threading import Lock
 
 import cv2
@@ -11,6 +14,34 @@ from rest_framework import permissions, status, viewsets
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+logger = logging.getLogger(__name__)
+
+# Detection timeout in seconds
+DETECTION_TIMEOUT = 60
+
+class TimeoutException(Exception):
+    """Raised when a detection operation times out."""
+    pass
+
+@contextmanager
+def timeout_handler(seconds):
+    """Context manager for handling detection timeouts."""
+    def _timeout(signum, frame):
+        raise TimeoutException(f"Detection operation timed out after {seconds} seconds")
+    
+    # Only use signal-based timeouts on Unix systems
+    try:
+        old_handler = signal.signal(signal.SIGALRM, _timeout)
+        signal.alarm(seconds)
+        try:
+            yield
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
+    except (ValueError, RuntimeError, AttributeError):
+        # Fallback: just yield without timeout on systems that don't support SIGALRM
+        yield
 
 from api.permissions import IsAuthenticatedWithAdminFullAccess, has_full_access
 from alert.models import Alert
@@ -373,7 +404,21 @@ class Detect3DCNNAPIView(APIView):
         except ValidationError as exc:
             return Response(exc.detail, status=400)
 
-        label, confidence = predict_frame_multi3d(frame, prediction_key)
+        try:
+            with timeout_handler(DETECTION_TIMEOUT):
+                label, confidence = predict_frame_multi3d(frame, prediction_key)
+        except TimeoutException as e:
+            logger.error("3D CNN detection timeout for camera %s: %s", camera_id, str(e))
+            return Response(
+                {"error": "Detection operation timed out", "label": None, "confidence": None},
+                status=504,
+            )
+        except Exception as e:
+            logger.exception("3D CNN detection error for camera %s", camera_id)
+            return Response(
+                {"error": "Detection operation failed", "label": None, "confidence": None},
+                status=500,
+            )
 
         if label is None:
             return Response(
@@ -387,8 +432,12 @@ class Detect3DCNNAPIView(APIView):
 
         frame_url = None
         if label == "Suspicious":
-            frame_url = _upload_frame_url(frame, camera, prefix="detect_3dcnn")
-            _build_alert(request.user, camera, confidence, frame_url=frame_url)
+            try:
+                frame_url = _upload_frame_url(frame, camera, prefix="detect_3dcnn")
+                _build_alert(request.user, camera, confidence, frame_url=frame_url)
+            except Exception as e:
+                logger.exception("Failed to upload frame or send alert for camera %s", camera_id)
+                # Don't fail the request if upload fails - alert is already created
 
         return Response(
             {

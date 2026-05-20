@@ -308,6 +308,8 @@ EMAIL_PORT = config("EMAIL_PORT", default=587, cast=int)
 EMAIL_USE_TLS = _to_bool(config("EMAIL_USE_TLS", default=True), default=True)
 EMAIL_HOST_USER = config("EMAIL_HOST_USER", default="").strip()
 EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", default="").replace(" ", "").strip()
+# Email timeout in seconds - prevents hanging connections
+EMAIL_TIMEOUT = config("EMAIL_TIMEOUT", default=10, cast=int)
 DEFAULT_FROM_EMAIL = config(
     "DEFAULT_FROM_EMAIL",
     default=EMAIL_HOST_USER or "no-reply@securevision.local",
@@ -321,6 +323,11 @@ if cloudinary and config("CLOUDINARY_CLOUD_NAME", default=""):
         api_key=config("CLOUDINARY_API_KEY"),
         api_secret=config("CLOUDINARY_API_SECRET"),
         secure=True,
+    )
+    # Cloudinary connection pooling configuration
+    cloudinary.config(
+        timeout=30,  # seconds
+        max_retries=2,
     )
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
