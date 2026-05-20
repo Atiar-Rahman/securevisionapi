@@ -63,6 +63,32 @@ class SuspiciousEmailNotificationTests(TestCase):
         self.assertEqual(len(email.alternatives), 1)
         self.assertEqual(email.attachments[0][0], "suspicious-frame.jpg")
 
+    @patch("detection.notifications.requests.get")
+    @patch("detection.notifications.get_connection")
+    def test_email_network_unreachable_stops_retries(self, mock_get_connection, mock_get):
+        mock_response = Mock()
+        mock_response.content = b"fake-jpeg-bytes"
+        mock_response.raise_for_status.return_value = None
+        mock_get.return_value = mock_response
+
+        backend = Mock()
+        backend.send_messages.side_effect = OSError(101, "Network is unreachable")
+        mock_get_connection.return_value = backend
+
+        alert = Alert.objects.create(
+            user=self.user,
+            camera=self.camera,
+            alert_type="suspicious",
+            confidence=0.95,
+            frame_url="https://example.com/suspicious-frame.jpg",
+        )
+
+        result = send_suspicious_detection_email(alert)
+
+        self.assertFalse(result)
+        self.assertEqual(backend.send_messages.call_count, 1)
+        self.assertEqual(len(mail.outbox), 0)
+
 
 @override_settings(
     EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",

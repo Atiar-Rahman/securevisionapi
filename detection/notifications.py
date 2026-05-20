@@ -89,8 +89,16 @@ def send_suspicious_detection_email(alert):
             email.send(fail_silently=False)
             return True
         except (socket.error, SMTPException, SMTPServerDisconnected, OSError) as e:
-            attempt += 1
             last_error = e
+            if isinstance(e, OSError) and getattr(e, "errno", None) == 101:
+                logger.error(
+                    "Network unreachable while sending email for alert %s: %s. Skipping retries.",
+                    getattr(alert, "id", None),
+                    str(e),
+                )
+                return False
+
+            attempt += 1
             if attempt < EMAIL_MAX_RETRIES:
                 logger.warning(
                     "Email send attempt %d/%d failed for alert %s: %s. Retrying...",

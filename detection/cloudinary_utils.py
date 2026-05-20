@@ -1,37 +1,26 @@
 import cv2
 import logging
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-import requests
 
 logger = logging.getLogger(__name__)
 
 try:
     import cloudinary
     import cloudinary.uploader
+    import cloudinary.api_client.call_api as cloudinary_call_api
+    from cloudinary.utils import get_http_connector
 except ImportError:  # pragma: no cover - dependency may not be installed locally yet
     cloudinary = None
 else:
-    # Configure session with connection pooling and retry strategy
-    def _get_requests_session():
-        """Create a requests session with connection pooling and retry strategy."""
-        session = requests.Session()
-        retry_strategy = Retry(
-            total=2,
-            backoff_factor=0.5,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["POST", "GET"],
-        )
-        adapter = HTTPAdapter(
-            max_retries=retry_strategy,
-            pool_connections=5,
-            pool_maxsize=5,
-        )
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
-        return session
+    def _init_cloudinary_http_pool():
+        """Initialize Cloudinary's shared HTTP connector with a larger connection pool."""
+        try:
+            pool_options = {"num_pools": 10, "maxsize": 10}
+            cloudinary_call_api._http = get_http_connector(cloudinary.config(), pool_options)
+            logger.info("Initialized Cloudinary HTTP pool: num_pools=%s maxsize=%s", pool_options["num_pools"], pool_options["maxsize"])
+        except Exception as e:
+            logger.warning("Unable to initialize Cloudinary HTTP pool: %s", e)
 
-    cloudinary_session = _get_requests_session()
+    _init_cloudinary_http_pool()
 
 
 UPLOAD_TIMEOUT = 30  # seconds
