@@ -57,9 +57,9 @@ from detection.ml.predict3dcnn import predict_frame_multi3d
 from detection.ml.predict3dcnn import get_last_prediction_debug as get_last_prediction_debug_3d
 
 from .cloudinary_utils import upload_frame_to_cloudinary
-from .models import VideoPrediction
 from .notifications import send_suspicious_detection_email
 from .serializers import VideoPredictionSerializer, VideoUploadSerializer
+from .suspicion_state import should_send_suspicious_email
 
 camera_locks = {}
 
@@ -234,10 +234,15 @@ class DetectAPIView14(APIView):
         if label is None:
             return Response(_prediction_response(None, None, None, f"camera:{prediction_key}"))
 
+        suspicious = label == "Suspicious"
+        should_notify = should_send_suspicious_email(camera.pk, suspicious)
+
         frame_url = None
-        if label == "Suspicious":
+        if suspicious:
             frame_url = _upload_frame_url(frame, camera, prefix="detect14")
-            _build_alert(request.user, camera, confidence, frame_url=frame_url)
+            alert = _build_alert(request.user, camera, confidence, frame_url=frame_url)
+            if should_notify:
+                send_suspicious_detection_email(alert)
 
         return Response(_prediction_response(label, confidence, frame_url, f"camera:{prediction_key}"))
 
@@ -267,10 +272,15 @@ class DetectAPIViewUpdate(APIView):
         if label is None:
             return Response(_prediction_response(None, None, None, f"camera:{prediction_key}"))
 
+        suspicious = label == "Suspicious"
+        should_notify = should_send_suspicious_email(camera.pk, suspicious)
+
         frame_url = None
-        if label == "Suspicious":
+        if suspicious:
             frame_url = _upload_frame_url(frame, camera, prefix="detect_update")
-            _build_alert(request.user, camera, confidence, frame_url=frame_url)
+            alert = _build_alert(request.user, camera, confidence, frame_url=frame_url)
+            if should_notify:
+                send_suspicious_detection_email(alert)
 
         return Response(_prediction_response(label, confidence, frame_url, f"camera:{prediction_key}"))
 
@@ -312,10 +322,15 @@ class DetectAPIView(APIView):
         if label is None:
             return Response(_prediction_response(None, None, None, f"camera:{prediction_key}"))
 
+        suspicious = label == "Suspicious"
+        should_notify = should_send_suspicious_email(camera.pk, suspicious)
+
         frame_url = None
-        if label == "Suspicious":
+        if suspicious:
             frame_url = _upload_frame_url(frame, camera, prefix="detect")
-            _build_alert(request.user, camera, confidence, frame_url=frame_url)
+            alert = _build_alert(request.user, camera, confidence, frame_url=frame_url)
+            if should_notify:
+                send_suspicious_detection_email(alert)
 
         return Response(_prediction_response(label, confidence, frame_url, f"camera:{prediction_key}"))
 
@@ -357,10 +372,15 @@ class DetectAPIViewSikp(APIView):
             payload["sequence_ready"] = False
             return Response(payload)
 
+        suspicious = label == "Suspicious"
+        should_notify = should_send_suspicious_email(camera.pk, suspicious)
+
         frame_url = None
-        if label == "Suspicious":
+        if suspicious:
             frame_url = _upload_frame_url(frame, camera, prefix="detect_skip")
-            _build_alert(request.user, camera, confidence, frame_url=frame_url)
+            alert = _build_alert(request.user, camera, confidence, frame_url=frame_url)
+            if should_notify:
+                send_suspicious_detection_email(alert)
 
         payload = _prediction_response(
             label,
@@ -428,11 +448,16 @@ class Detect3DCNNAPIView(APIView):
                 }
             )
 
+        suspicious = label == "Suspicious"
+        should_notify = should_send_suspicious_email(camera.pk, suspicious)
+
         frame_url = None
-        if label == "Suspicious":
+        if suspicious:
             try:
                 frame_url = _upload_frame_url(frame, camera, prefix="detect_3dcnn")
-                _build_alert(request.user, camera, confidence, frame_url=frame_url)
+                alert = _build_alert(request.user, camera, confidence, frame_url=frame_url)
+                if should_notify:
+                    send_suspicious_detection_email(alert)
             except Exception as e:
                 logger.exception("Failed to upload frame or send alert for camera %s", camera_id)
                 # Don't fail the request if upload fails - alert is already created

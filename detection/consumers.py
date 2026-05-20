@@ -19,6 +19,7 @@ from alert.models import Alert
 from cameras.models import Camera
 from detection.cloudinary_utils import upload_frame_to_cloudinary
 from detection.notifications import send_suspicious_detection_email
+from detection.suspicion_state import should_send_suspicious_email
 
 
 User = get_user_model()
@@ -126,6 +127,11 @@ class DetectionConsumer(AsyncWebsocketConsumer):
                     confidence=confidence,
                     frame_url=frame_url,
                 )
+                should_notify = await database_sync_to_async(should_send_suspicious_email)(camera.id, True)
+                if should_notify:
+                    await database_sync_to_async(send_suspicious_detection_email)(alert)
+            elif label is not None:
+                await database_sync_to_async(should_send_suspicious_email)(camera.id, False)
 
             response = {"label": label, "confidence": round(confidence, 2)}
             if label == "Suspicious":

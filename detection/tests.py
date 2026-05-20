@@ -10,6 +10,7 @@ from rest_framework.test import APITestCase
 from alert.models import Alert
 from cameras.models import Camera
 from detection.notifications import send_suspicious_detection_email
+from detection.suspicion_state import should_send_suspicious_email
 from users.models import User
 
 
@@ -37,10 +38,10 @@ class SuspiciousEmailNotificationTests(TestCase):
             camera_type="webcam",
             stream_url="rtsp://front-door",
         )
+        mail.outbox.clear()
 
-    @patch("alert.signals.send_suspicious_detection_email")
     @patch("detection.notifications.requests.get")
-    def test_email_contains_frame_link_and_attachment(self, mock_get, mock_signal_send):
+    def test_email_contains_frame_link_and_attachment(self, mock_get):
         mock_response = Mock()
         mock_response.content = b"fake-jpeg-bytes"
         mock_response.raise_for_status.return_value = None
@@ -64,32 +65,23 @@ class SuspiciousEmailNotificationTests(TestCase):
         self.assertEqual(len(email.alternatives), 1)
         self.assertEqual(email.attachments[0][0], "suspicious-frame.jpg")
 
-    @patch("alert.signals.send_suspicious_detection_email")
-    def test_suspicious_alert_creation_triggers_email(self, mock_send):
-        alert = Alert.objects.create(
-            user=self.user,
-            camera=self.camera,
-            alert_type="suspicious",
-            confidence=0.95,
-            frame_url="https://example.com/suspicious-frame.jpg",
-        )
+    def test_suspicious_email_sent_only_on_transition(self):
+        camera_id = self.camera.id
 
-        self.assertTrue(mock_send.called)
-        self.assertEqual(mock_send.call_count, 1)
-        self.assertEqual(mock_send.call_args[0][0], alert)
+        self.assertTrue(should_send_suspicious_email(camera_id, True))
+        self.assertFalse(should_send_suspicious_email(camera_id, True))
+        self.assertFalse(should_send_suspicious_email(camera_id, False))
+        self.assertTrue(should_send_suspicious_email(camera_id, True))
 
-    @patch("alert.signals.send_suspicious_detection_email")
     @patch("detection.notifications.requests.get")
-    @patch("detection.notifications.get_connection")
-    def test_email_network_unreachable_stops_retries(self, mock_get_connection, mock_get, mock_signal_send):
+    @patch("detection.notifications.EmailMultiAlternatives.send")
+    def test_email_network_unreachable_stops_retries(self, mock_email_send, mock_get):
         mock_response = Mock()
         mock_response.content = b"fake-jpeg-bytes"
         mock_response.raise_for_status.return_value = None
         mock_get.return_value = mock_response
 
-        backend = Mock()
-        backend.send_messages.side_effect = OSError(101, "Network is unreachable")
-        mock_get_connection.return_value = backend
+        mock_email_send.side_effect = OSError(101, "Network is unreachable")
 
         alert = Alert.objects.create(
             user=self.user,
@@ -102,7 +94,7 @@ class SuspiciousEmailNotificationTests(TestCase):
         result = send_suspicious_detection_email(alert)
 
         self.assertFalse(result)
-        self.assertEqual(backend.send_messages.call_count, 1)
+        self.assertEqual(mock_email_send.call_count, 1)
         self.assertEqual(len(mail.outbox), 0)
 
 
@@ -121,6 +113,7 @@ class DetectionApiTests(APITestCase):
             camera_type="webcam",
             stream_url="rtsp://warehouse-cam",
         )
+        mail.outbox.clear()
         self.client.force_authenticate(user=self.user)
 
     @patch("detection.notifications.requests.get")
